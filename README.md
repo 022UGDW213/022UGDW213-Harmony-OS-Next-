@@ -160,6 +160,14 @@ npm run preview          # Preview production build
 
 ## 🔧 Technology Stack
 
+### 💻 Programming Languages
+- **C** (Kernel, Drivers, HAL) - Core operating system logic
+- **Assembly (x86)** (Bootloader, Context Switching) - Low-level hardware control
+- **TypeScript** (Frontend, Services) - Modern web-based desktop interface
+- **C++17** (Native Core) - High-performance system monitoring (brain.cpp)
+- **Shell** (DevOps) - Automation and build scripts (`scan.sh`, `self_heal.sh`)
+- **Makefile** (Build System) - Cross-platform compilation orchestration
+
 **Frontend:**
 - React 19.2 + TypeScript
 - Vite 6.2 (dev server & build)
