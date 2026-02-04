@@ -1,8 +1,18 @@
 # Harmony OS Next
 
 **AI-Powered Intelligent Desktop Environment**
+[![Security Status](https://img.shields.io/badge/Security-Active-green?style=flat&logo=security)](SECURITY.md)
+[![AI Reasoning](https://img.shields.io/badge/AI-DeepSeek-blue?style=flat&logo=artificial-intelligence)](docs/AI_REASONING.md)
 
 A beautiful macOS-like desktop simulation enhanced with advanced AI reasoning and security intelligence capabilities from CyberLab.
+
+## 🛡️ Security Architecture
+> **"Security is not a feature, it's the kernel."** - *CyberLab Philosophy*
+
+- **Vulnerability Management**: Adheres to strict [Security Policy](SECURITY.md).
+- **Automated Hygiene**: `scan.sh` enforces codebase integrity pre-commit.
+- **Self-Healing**: `self_heal.sh` automatically recovers from build corruptions.
+- **Threat Detection**: Integrated AI agents monitor runtime anomalies (see [AI Reasoning](docs/AI_REASONING.md)).
 
 ## ✨ Features
 
