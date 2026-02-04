@@ -1,0 +1,343 @@
+#include "scheduler.h"
+#include "hal/hal.h"
+#include "bridge.h"
+#include "quantum/scheduler_advisor.h"
+
+#define MAX_PROCESSES 64
+#define DEFAULT_STACK_SIZE (64 * 1024)  // 64 KB
+#define DEFAULT_TIME_SLICE 10
+
+// Global process table
+static process_t* process_table[MAX_PROCESSES];
+static int next_pid = 1;
+static process_t* current_process = NULL;
+static process_t* ready_queue_head = NULL;
+static process_t* ready_queue_tail = NULL;
+
+// Statistics
+static scheduler_stats_t stats = {0};
+
+// Initialize scheduler
+void scheduler_init(void) {
+    hal_memset(process_table, 0, sizeof(process_table));
+    next_pid = 1;
+    current_process = NULL;
+    ready_queue_head = NULL;
+    ready_queue_tail = NULL;
+    hal_memset(&stats, 0, sizeof(stats));
+    
+    advisor_init();
+    hal_printf("SCHED: Initialized\n");
+}
+
+// Shutdown scheduler
+void scheduler_shutdown(void) {
+    // Clean up all processes
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i]) {
+            if (process_table[i]->stack) {
+                HAL_FREE(process_table[i]->stack);
+            }
+            HAL_FREE(process_table[i]);
+            process_table[i] = NULL;
+        }
+    }
+    
+    hal_printf("SCHED: Shutdown\n");
+}
+
+// Add process to ready queue
+static void add_to_ready_queue(process_t* proc) {
+    proc->next = NULL;
+    
+    if (ready_queue_tail) {
+        ready_queue_tail->next = proc;
+        ready_queue_tail = proc;
+    } else {
+        ready_queue_head = ready_queue_tail = proc;
+    }
+}
+
+// Remove process from ready queue
+static process_t* remove_from_ready_queue(void) {
+    if (!ready_queue_head) {
+        return NULL;
+    }
+    
+    process_t* proc = ready_queue_head;
+    ready_queue_head = proc->next;
+    
+    if (!ready_queue_head) {
+        ready_queue_tail = NULL;
+    }
+    
+    proc->next = NULL;
+    return proc;
+}
+
+// Create a new process
+int scheduler_create_process(void (*entry)(void), size_t stack_size) {
+    // Find free PID
+    if (next_pid >= MAX_PROCESSES) {
+        hal_printf("SCHED WARN: Process table full\n");
+        return -1;
+    }
+    
+    int pid = next_pid++;
+    
+    // Allocate process control block
+    process_t* proc = (process_t*)HAL_MALLOC(sizeof(process_t));
+    if (!proc) {
+        hal_printf("SCHED WARN: Failed to allocate PCB\n");
+        return -1;
+    }
+    
+    // Allocate stack
+    if (stack_size == 0) {
+        stack_size = DEFAULT_STACK_SIZE;
+    }
+    
+    proc->stack = HAL_MALLOC(stack_size);
+    if (!proc->stack) {
+        hal_printf("SCHED WARN: Failed to allocate stack\n");
+        HAL_FREE(proc);
+        return -1;
+    }
+    
+    // Initialize process
+    proc->pid = pid;
+    proc->state = PROCESS_READY;
+    proc->stack_size = stack_size;
+    proc->priority = 0;
+    proc->time_slice = DEFAULT_TIME_SLICE;
+    proc->total_time = 0;
+    proc->next = NULL;
+    proc->ipc_space = NULL;
+    proc->task = NULL;
+    
+    // Security Context (Phase 8)
+    if (current_process) {
+        proc->security = current_process->security;
+    } else {
+        proc->security = ROOT_CONTEXT;
+    }
+    
+    // Initialize context
+    void* stack_top = (char*)proc->stack + stack_size;
+    init_context(&proc->context, entry, stack_top);
+    
+    // Add to process table
+    process_table[pid] = proc;
+    
+    // Add to ready queue
+    add_to_ready_queue(proc);
+    
+    stats.total_processes++;
+    stats.running_processes++;
+    
+    hal_printf("SCHED: Created PID %d\n", pid);
+    
+    advisor_process_created(pid);
+    return pid;
+}
+
+// Exit current process
+void scheduler_exit_process(int exit_code) {
+    if (!current_process) {
+        return;
+    }
+    
+    hal_printf("SCHED: PID %d exiting (%d)\n", current_process->pid, exit_code);
+    
+    current_process->state = PROCESS_TERMINATED;
+    stats.running_processes--;
+    
+    // Schedule next process
+    schedule();
+}
+
+// Kill a specific process
+int scheduler_kill(int pid) {
+    if (pid < 0 || pid >= MAX_PROCESSES || !process_table[pid]) {
+        return -1;
+    }
+    
+    process_t* proc = process_table[pid];
+    if (proc->state == PROCESS_TERMINATED) {
+        return 0; // Already dead
+    }
+    
+    hal_printf("SCHED: Killing PID %d\n", pid);
+    proc->state = PROCESS_TERMINATED;
+    
+    // If it was running, we need to schedule
+    if (proc == current_process) {
+        stats.running_processes--;
+        schedule();
+    } else {
+        stats.running_processes--;
+    }
+    
+    return 0;
+}
+
+// Suspend a process
+int scheduler_suspend(int pid) {
+    if (pid < 0 || pid >= MAX_PROCESSES || !process_table[pid]) {
+        return -1;
+    }
+    
+    process_t* proc = process_table[pid];
+    if (proc->state == PROCESS_TERMINATED) {
+        return -1;
+    }
+    
+    proc->state = PROCESS_SUSPENDED;
+    
+    // If it's the current process, yield
+    if (proc == current_process) {
+        schedule();
+    }
+    
+    return 0;
+}
+
+// Resume a process
+int scheduler_resume(int pid) {
+    if (pid < 0 || pid >= MAX_PROCESSES || !process_table[pid]) {
+        return -1;
+    }
+    
+    process_t* proc = process_table[pid];
+    if (proc->state != PROCESS_SUSPENDED) {
+        return 0; // Not suspended
+    }
+    
+    proc->state = PROCESS_READY;
+    add_to_ready_queue(proc);
+    
+    return 0;
+}
+
+// Get process by PID
+process_t* scheduler_get_process(int pid) {
+    if (pid < 0 || pid >= MAX_PROCESSES) {
+        return NULL;
+    }
+    return process_table[pid];
+}
+
+// Get current running process
+process_t* scheduler_get_current_process(void) {
+    return current_process;
+}
+
+// Round-robin scheduler
+void schedule(void) {
+    // Update Kernel Stats for the Bridge
+    bridge_update_stats();
+
+    // Save current process if it's still running
+    if (current_process && current_process->state == PROCESS_RUNNING) {
+        current_process->state = PROCESS_READY;
+        advisor_report_behavior(current_process->pid, 0); // 0 = CPU Intensive
+        add_to_ready_queue(current_process);
+    }
+    
+    // Quantum Selection Logic (Simplified)
+    process_t* best_candidate = NULL;
+    // (Optimization logic skipped for now to focus on HAL compat)
+
+    if (ready_queue_head) {
+        int boost = advisor_get_priority_boost(ready_queue_head->pid);
+        if (boost > 0) {
+             // hal_printf("Quantum Boost PID %d (+%d)\n", ready_queue_head->pid, boost);
+        }
+    }
+
+    // Get next process from ready queue
+    process_t* next_process = remove_from_ready_queue();
+    
+    if (!next_process) {
+        // hal_printf("SCHED: Idle\n");
+        current_process = NULL;
+        return;
+    }
+    
+    // If same process, just continue
+    if (next_process == current_process) {
+        next_process->state = PROCESS_RUNNING;
+        return;
+    }
+    
+    // Context switch
+    process_t* old_process = current_process;
+    current_process = next_process;
+    current_process->state = PROCESS_RUNNING;
+    
+    stats.total_switches++;
+    
+    // Debug spam reduction
+    // hal_printf("Switch: %d -> %d\n", old_process ? old_process->pid : 0, current_process->pid);
+    
+    if (old_process) {
+        context_switch(&old_process->context, &current_process->context);
+    } else {
+        restore_context(&current_process->context);
+    }
+}
+
+// Yield CPU to next process
+void scheduler_yield(void) {
+    schedule();
+}
+
+// Get scheduler statistics
+scheduler_stats_t scheduler_get_stats(void) {
+    return stats;
+}
+
+// Print scheduler statistics
+void scheduler_print_stats(void) {
+    hal_printf("SCHED STATS: Processes=%d Running=%d Switches=%d\n", 
+               (int)stats.total_processes, (int)stats.running_processes, (int)stats.total_switches);
+}
+
+// Print all processes
+void scheduler_print_processes(void) {
+    hal_printf("PROCESS TABLE:\n");
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i]) {
+            process_t* p = process_table[i];
+            hal_printf("PID %d: State=%d Stack=%d Prio=%d\n", 
+                       p->pid, p->state, (int)p->stack_size, p->priority);
+        }
+    }
+}
+
+// --- STUBS FOR UNLINKED DEPENDENCIES ---
+// These allow us to verify the HAL Scheduler logic without the full OS context/asm stack.
+
+void advisor_init(void) {}
+void advisor_process_created(int pid) { (void)pid; }
+void bridge_update_stats(void) {}
+int advisor_get_priority_boost(int pid) { (void)pid; return 0; }
+void advisor_report_behavior(int pid, int behavior) { (void)pid; (void)behavior; }
+
+// Context switching stubs (Architecture specific)
+// For verification, we won't actually switch contexts, just print.
+void init_context(context_t* ctx, void (*entry)(void), void* stack) {
+    (void)ctx; (void)entry; (void)stack;
+    // In real implementation: setup stack frame, instruction pointer, flags
+}
+
+void context_switch(context_t* old, context_t* next) {
+    (void)old; (void)next;
+    // In real implementation: save regs to old, load regs from next
+}
+
+void restore_context(context_t* ctx) {
+    (void)ctx;
+    // In real implementation: load regs from ctx and iret/ret
+}
+

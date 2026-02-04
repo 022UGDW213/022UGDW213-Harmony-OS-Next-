@@ -1,0 +1,44 @@
+#include "log.h"
+#include "hal/hal.h"
+#include <stdarg.h>
+
+// Global log level
+int klog_current_level = KLOG_INFO;
+
+// ANSI colors for log levels (Platform dependent support)
+static const char* LEVEL_NAMES[] = {
+    "DEBUG",
+    "INFO",
+    "WARN",
+    "ERROR",
+    "CRIT"
+};
+
+void klog_init(void) {
+    if (klog_current_level <= KLOG_INFO) {
+        hal_printf("[LOG] Logger initialized at level %d\n", klog_current_level);
+    }
+}
+
+void klog(int level, const char* fmt, ...) {
+    if (level < klog_current_level) return;
+    int max_level = sizeof(LEVEL_NAMES)/sizeof(char*) - 1;
+    if (level > max_level) level = max_level;
+ 
+    // Format: [LEVEL] Message
+    hal_printf("[%s] ", LEVEL_NAMES[level]);
+
+    va_list args;
+    va_start(args, fmt);
+    hal_vprintf(fmt, args);
+    va_end(args);
+
+    HAL_PUTC('\n');
+}
+
+int sys_dmesg_read(char* buf, size_t size) {
+    // Stubbed out - Ring buffer logic removed for HAL portability
+    (void)buf;
+    (void)size;
+    return 0; 
+}

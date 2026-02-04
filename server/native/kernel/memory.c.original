@@ -1,0 +1,321 @@
+#include "memory.h"
+#include "hal/hal.h"
+
+// Initialize memory manager
+memory_manager_t* memory_init(size_t total_memory) {
+    memory_manager_t* mm = (memory_manager_t*)HAL_MALLOC(sizeof(memory_manager_t));
+    if (!mm) {
+        hal_printf("Failed to allocate memory manager\n");
+        return NULL;
+    }
+    
+    hal_memset(mm, 0, sizeof(memory_manager_t));
+    
+    // Initialize statistics
+    mm->stats.total_physical = total_memory;
+    mm->stats.free_physical = total_memory;
+    mm->stats.total_virtual = (size_t)1 << 48;
+    mm->stats.free_virtual = mm->stats.total_virtual;
+    
+    // Create initial free page list
+    size_t num_pages = total_memory / PAGE_SIZE;
+    mm->free_pages = NULL;
+    
+    for (size_t i = 0; i < num_pages; i++) {
+        page_frame_t* page = (page_frame_t*)HAL_MALLOC(sizeof(page_frame_t));
+        // Note: For bare metal allocator bootstrapping, we shouldn't use malloc here recursively 
+        // if this was the physical allocator itself. But this is the 'logical' memory manager on top.
+        page->physical_addr = i * PAGE_SIZE;
+        page->ref_count = 0;
+        page->flags = 0;
+        page->next = mm->free_pages;
+        mm->free_pages = page;
+    }
+    
+    hal_printf("MEMORY: Initialized (%d MB)\n", total_memory / (1024 * 1024));
+    
+    return mm;
+}
+
+// Shutdown memory manager
+void memory_shutdown(memory_manager_t* mm) {
+    if (!mm) return;
+    
+    // Free all page frames
+    page_frame_t* page = mm->free_pages;
+    while (page) {
+        page_frame_t* next = page->next;
+        HAL_FREE(page);
+        page = next;
+    }
+    
+    // Free all VM regions
+    vm_region_t* region = mm->vm_regions;
+    while (region) {
+        vm_region_t* next = region->next;
+        HAL_FREE(region);
+        region = next;
+    }
+    
+    HAL_FREE(mm);
+    hal_printf("MEMORY: Shutdown\n");
+}
+
+// Allocate a single physical page
+void* alloc_physical_page(memory_manager_t* mm) {
+    if (!mm || !mm->free_pages) {
+        hal_printf("WARN: Out of physical memory\n");
+        return NULL;
+    }
+    
+    // Pop from free list
+    page_frame_t* page = mm->free_pages;
+    mm->free_pages = page->next;
+    
+    page->ref_count = 1;
+    page->next = NULL;
+    
+    mm->stats.free_physical -= PAGE_SIZE;
+    mm->stats.allocations++;
+    
+    return (void*)(uintptr_t)page->physical_addr;
+}
+
+// Allocate multiple contiguous physical pages
+void* alloc_physical_pages(memory_manager_t* mm, size_t count) {
+    if (!mm || count == 0) return NULL;
+    
+    // For simplicity, allocate individual pages
+    void* first_page = alloc_physical_page(mm);
+    
+    for (size_t i = 1; i < count; i++) {
+        alloc_physical_page(mm);
+    }
+    
+    return first_page;
+}
+
+// Free a physical page
+void free_physical_page(memory_manager_t* mm, void* page_addr) {
+    if (!mm || !page_addr) return;
+    
+    page_frame_t* page = (page_frame_t*)HAL_MALLOC(sizeof(page_frame_t));
+    page->physical_addr = (uint64_t)(uintptr_t)page_addr;
+    page->ref_count = 0;
+    page->flags = 0;
+    page->next = mm->free_pages;
+    mm->free_pages = page;
+    
+    mm->stats.free_physical += PAGE_SIZE;
+}
+
+// Free multiple physical pages
+void free_physical_pages(memory_manager_t* mm, void* pages, size_t count) {
+    if (!mm || !pages || count == 0) return;
+    
+    for (size_t i = 0; i < count; i++) {
+        void* page = (void*)((uintptr_t)pages + i * PAGE_SIZE);
+        free_physical_page(mm, page);
+    }
+}
+
+// Allocate virtual memory (Windows VirtualAlloc-style)
+void* alloc_virtual(memory_manager_t* mm, void* addr, size_t size, uint32_t protection) {
+    if (!mm || size == 0) return NULL;
+    
+    size_t num_pages = bytes_to_pages(size);
+    size_t aligned_size = pages_to_bytes(num_pages);
+    
+    // Create VM region
+    vm_region_t* region = (vm_region_t*)HAL_MALLOC(sizeof(vm_region_t));
+    region->start_addr = (uint64_t)(uintptr_t)addr;
+    region->end_addr = region->start_addr + aligned_size;
+    region->protection = protection;
+    region->flags = MEM_COMMIT;
+    region->next = mm->vm_regions;
+    mm->vm_regions = region;
+    
+    // Allocate physical pages and map them
+    for (size_t i = 0; i < num_pages; i++) {
+        void* phys_page = alloc_physical_page(mm);
+        if (!phys_page) {
+            hal_printf("WARN: Failed to allocate physical page for virtual memory\n");
+            return NULL;
+        }
+        
+        void* virt_addr = (void*)(region->start_addr + i * PAGE_SIZE);
+        map_page(mm, virt_addr, phys_page, protection);
+    }
+    
+    mm->stats.free_virtual -= aligned_size;
+    
+    hal_printf("MEMORY: Allocated %d bytes at 0x%x\n", (int)aligned_size, (int)region->start_addr); // simplified format
+    
+    return (void*)(uintptr_t)region->start_addr;
+}
+
+// Reserve virtual address space (Windows-style)
+void* reserve_virtual(memory_manager_t* mm, void* addr, size_t size) {
+    if (!mm || size == 0) return NULL;
+    
+    size_t num_pages = bytes_to_pages(size);
+    size_t aligned_size = pages_to_bytes(num_pages);
+    
+    vm_region_t* region = (vm_region_t*)HAL_MALLOC(sizeof(vm_region_t));
+    region->start_addr = (uint64_t)(uintptr_t)addr;
+    region->end_addr = region->start_addr + aligned_size;
+    region->protection = MEM_PROT_NONE;
+    region->flags = MEM_RESERVE;
+    region->next = mm->vm_regions;
+    mm->vm_regions = region;
+    
+    mm->stats.free_virtual -= aligned_size;
+    
+    return (void*)(uintptr_t)region->start_addr;
+}
+
+// Commit reserved virtual memory
+bool commit_virtual(memory_manager_t* mm, void* addr, size_t size, uint32_t protection) {
+    if (!mm || !addr || size == 0) return false;
+    
+    // Find the VM region
+    vm_region_t* region = mm->vm_regions;
+    uint64_t target_addr = (uint64_t)(uintptr_t)addr;
+    
+    while (region) {
+        if (region->start_addr <= target_addr && target_addr < region->end_addr) {
+            if (region->flags & MEM_RESERVE) {
+                region->flags = MEM_COMMIT;
+                region->protection = protection;
+                
+                // Allocate physical pages
+                size_t num_pages = bytes_to_pages(size);
+                for (size_t i = 0; i < num_pages; i++) {
+                    void* phys_page = alloc_physical_page(mm);
+                    void* virt_addr = (void*)(target_addr + i * PAGE_SIZE);
+                    map_page(mm, virt_addr, phys_page, protection);
+                }
+                
+                return true;
+            }
+        }
+        region = region->next;
+    }
+    
+    return false;
+}
+
+// Free virtual memory
+bool free_virtual(memory_manager_t* mm, void* addr, size_t size) {
+    if (!mm || !addr) return false;
+    
+    uint64_t target_addr = (uint64_t)(uintptr_t)addr;
+    vm_region_t** prev = &mm->vm_regions;
+    vm_region_t* region = mm->vm_regions;
+    
+    while (region) {
+        if (region->start_addr == target_addr) {
+            // Unmap pages
+            size_t region_size = region->end_addr - region->start_addr;
+            size_t num_pages = region_size / PAGE_SIZE;
+            
+            for (size_t i = 0; i < num_pages; i++) {
+                void* virt_addr = (void*)(region->start_addr + i * PAGE_SIZE);
+                unmap_page(mm, virt_addr);
+            }
+            
+            // Remove region
+            *prev = region->next;
+            mm->stats.free_virtual += region_size;
+            HAL_FREE(region);
+            
+            return true;
+        }
+        prev = &region->next;
+        region = region->next;
+    }
+    
+    return false;
+}
+
+// Change memory protection
+bool protect_memory(memory_manager_t* mm, void* addr, size_t size, uint32_t protection) {
+    if (!mm || !addr || size == 0) return false;
+    
+    uint64_t target_addr = (uint64_t)(uintptr_t)addr;
+    vm_region_t* region = mm->vm_regions;
+    
+    while (region) {
+        if (region->start_addr <= target_addr && target_addr < region->end_addr) {
+            region->protection = protection;
+            
+            // Simulation of TLB Flush on permission change
+            tlb_flush_all();
+            
+            if (protection & MEM_PROT_COW) {
+                // In real OS: Mark PTEs as Read-Only. On Write Fault -> Duplicate page -> Map new page -> RO->RW.
+            }
+            
+            return true;
+        }
+        region = region->next;
+    }
+    
+    return false;
+}
+
+// Map virtual page to physical page
+bool map_page(memory_manager_t* mm, void* virtual_addr, void* physical_addr, uint32_t protection) {
+    if (!mm || !virtual_addr || !physical_addr) return false;
+    // In a real OS, this would update page tables
+    return true;
+}
+
+// Unmap virtual page
+bool unmap_page(memory_manager_t* mm, void* virtual_addr) {
+    if (!mm || !virtual_addr) return false;
+    
+    // Get physical address and free it
+    void* phys_addr = get_physical_addr(mm, virtual_addr);
+    if (phys_addr) {
+        free_physical_page(mm, phys_addr);
+    }
+    
+    return true;
+}
+
+// Get physical address from virtual address
+void* get_physical_addr(memory_manager_t* mm, void* virtual_addr) {
+    if (!mm || !virtual_addr) return NULL;
+    // For simulation, return a dummy address
+    return (void*)((uintptr_t)virtual_addr & ~0xFFF);
+}
+
+// Get memory statistics
+memory_stats_t get_memory_stats(memory_manager_t* mm) {
+    if (!mm) {
+        memory_stats_t empty = {0};
+        return empty;
+    }
+    return mm->stats;
+}
+
+// Print memory statistics
+void print_memory_stats(memory_manager_t* mm) {
+    if (!mm) return;
+    
+    hal_printf("\nMEMORY STATISTICS:\n");
+    hal_printf("  Total Physical: %d MB\n", (int)(mm->stats.total_physical / (1024 * 1024)));
+    hal_printf("  Free Physical:  %d MB\n", (int)(mm->stats.free_physical / (1024 * 1024)));
+    hal_printf("  Allocations:    %d\n", (int)mm->stats.allocations);
+    hal_printf("\n");
+}
+
+// TLB Management (Simulation)
+void tlb_flush(void* virtual_addr) {
+    (void)virtual_addr;
+}
+
+void tlb_flush_all(void) {
+    // printf("TLB Flush\n");
+}

@@ -1,0 +1,5 @@
+{
+  "name": "Tahoe macOS Simulation",
+  "description": "An interactive simulation of the fictional Tahoe macOS, featuring a modern UI, draggable windows, a live clock, and an interactive dock.",
+  "requestFramePermissions": []
+}

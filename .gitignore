@@ -1,0 +1,12 @@
+node_modules/
+build/
+*.o
+*.a
+*.iso
+harmony_hosted
+harmony_bare
+harmony_kernel
+iso/
+.env
+.DS_Store
+*.log
