@@ -7,7 +7,7 @@
 #define MB1_FLAGS    0x03  /* Align modules + Mem Info */
 #define MB1_CHECKSUM -(MB1_MAGIC + MB1_FLAGS)
 
-.section .multiboot_header
+.section .multiboot_header, "a"   /* allocatable: stays first in the LOAD segment (QEMU scans the first 8KiB of the file) */
 .align 4
 mb1_header_start:
     .long MB1_MAGIC

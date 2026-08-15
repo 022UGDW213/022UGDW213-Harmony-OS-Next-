@@ -1,6 +1,7 @@
 # Configuration
 # Support both Homebrew (x86_64-elf-gcc) and Docker (gcc) paths
 # Explicitly check for /usr/local/bin/x86_64-elf-gcc which is standard for Brew
+set -e
 if [ -x "/usr/local/bin/x86_64-elf-gcc" ]; then
     CC="/usr/local/bin/x86_64-elf-gcc"
     LD="/usr/local/bin/x86_64-elf-ld"
@@ -27,14 +28,26 @@ mkdir -p $BUILD
 echo "🔨 Assembling boot.S..."
 $CC -x assembler-with-cpp $CFLAGS -c boot/boot.S -o $BUILD/boot.o
 
+# 2b. Compile 32-bit ISR stubs (plain gas, no preprocessor needed)
+echo "🔨 Assembling kernel/isr.s..."
+$CC $CFLAGS -c kernel/isr.s -o $BUILD/isr.o
+
 # 3. Compile Bare Metal Kernel Sources
-# ONLY compile the files we explicitly wrote for Phase 12
+# ONLY compile the files we explicitly wrote for the bare-metal phase
 SOURCES=(
     "kernel/kmain_bare.c"
     "boot/multiboot.c"
     "drivers/vga.c"
     "drivers/serial.c"
     "drivers/keyboard.c"
+    "drivers/pic.c"
+    "drivers/pit.c"
+    "kernel/gdt.c"
+    "kernel/idt.c"
+    "kernel/kprintf.c"
+    "kernel/meminfo.c"
+    "kernel/string.c"
+    "kernel/shell.c"
     "kernel/hal/bare/hal.c"
 )
 

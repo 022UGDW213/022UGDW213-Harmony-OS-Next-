@@ -26,19 +26,25 @@ void keyboard_init(void) {
 }
 
 char keyboard_get_char(void) {
-    while (1) {
-        // Poll status register
-        if (inb(PS2_STATUS) & 0x1) {
-            uint8_t scancode = inb(PS2_DATA);
-            
-            // Ignore break codes (key release) - MSB set
-            if (!(scancode & 0x80)) {
-                if (scancode < sizeof(scancode_map)) {
-                    char c = scancode_map[scancode];
-                    if (c) return c;
-                }
-            }
-        }
+    char c;
+    while (!keyboard_get_char_nb(&c)) {
         // Busy wait
     }
+    return c;
+}
+
+// Non-blocking: read one scancode from the PS/2 data port (0x60) when the
+// status register (0x64) bit 0 says data is present. Ignore break codes.
+int keyboard_get_char_nb(char* c) {
+    if (inb(PS2_STATUS) & 0x1) {
+        uint8_t scancode = inb(PS2_DATA);
+        if (!(scancode & 0x80) && scancode < sizeof(scancode_map)) {
+            char ch = scancode_map[scancode];
+            if (ch) {
+                *c = ch;
+                return 1;
+            }
+        }
+    }
+    return 0;
 }

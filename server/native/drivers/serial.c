@@ -38,3 +38,12 @@ void serial_print(const char* str) {
         serial_putc(*str++);
     }
 }
+
+// Read one byte from COM1 if available (line status register 0x3FD bit 0).
+int serial_getc(char* c) {
+    if (inb(PORT + 5) & 0x01) {   // 0x3FD bit 0: RX data ready
+        *c = (char)inb(PORT);
+        return 1;
+    }
+    return 0;
+}

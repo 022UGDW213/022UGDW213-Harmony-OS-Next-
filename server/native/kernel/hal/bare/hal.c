@@ -2,13 +2,10 @@
 #include "../hal.h"
 #include "../../../drivers/vga.h"
 #include "../../../drivers/serial.h"
+#include "../../../drivers/pit.h"
+#include <stdint.h>
 
-// TODO: Implement pit.h if missing, or stub it out
-//#include "../../../drivers/pit.h"
-// Stubbing PIT for now to ensure compilation
-#define PIT_TICKS_PER_MS 1000
-uint64_t pit_get_ticks(void) { return 0; }
-void pit_init(uint32_t hz) { (void)hz; }
+// Real PIT driver provides pit_get_ticks() and pit_init() (see drivers/pit.c)
 
 
 // ========= Console Operations =========
