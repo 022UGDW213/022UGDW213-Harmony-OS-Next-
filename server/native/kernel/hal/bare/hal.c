@@ -1,10 +1,10 @@
 // kernel/hal/bare/hal.c - Bare Metal HAL implementation
 #include "../hal.h"
-#include "../../drivers/vga.h"
-#include "../../drivers/serial.h"
+#include "../../../drivers/vga.h"
+#include "../../../drivers/serial.h"
 
 // TODO: Implement pit.h if missing, or stub it out
-//#include "../../drivers/pit.h"
+//#include "../../../drivers/pit.h"
 // Stubbing PIT for now to ensure compilation
 #define PIT_TICKS_PER_MS 1000
 uint64_t pit_get_ticks(void) { return 0; }

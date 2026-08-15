@@ -5,6 +5,11 @@
 
 // Entry point from assembly
 // ebx contains multiboot header address
+
+// Multiboot 1 bootloader magic (QEMU -kernel direct boot uses the
+// Multiboot 1 header from boot/boot.S and passes this value in eax).
+#define MB1_BOOTLOADER_MAGIC 0x2BADB002
+
 void kmain(uint32_t magic, uint32_t addr) {
     // 1. Initialize Drivers
     vga_clear();
@@ -16,11 +21,14 @@ void kmain(uint32_t magic, uint32_t addr) {
     serial_print("[BOOT] HarmonyOS Bare Metal Kernel starting...\n");
     
     // 2. Multiboot Check
-    if (magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
-        vga_print("⚠️  Invalid Magic Number (Not Multiboot2)\n");
+    if (magic == MULTIBOOT2_BOOTLOADER_MAGIC) {
+        vga_print("Multiboot2 Magic Verified\n");
+        multiboot_parse(addr); // addr points to a Multiboot2 tag structure
+    } else if (magic == MB1_BOOTLOADER_MAGIC) {
+        vga_print("Multiboot1 Magic Verified (QEMU -kernel direct boot)\n");
+        // addr points to a Multiboot1 info struct (MB2 layout parser N/A)
     } else {
-        vga_print("✅ Multiboot2 Magic Verified\n");
-        multiboot_parse(addr);
+        vga_print("!! Invalid Magic Number (Not Multiboot)\n");
     }
     
     // 3. Interactive Loop
