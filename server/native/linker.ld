@@ -35,6 +35,15 @@ SECTIONS {
         *(.bss)
         *(.bss.*)
     }
-    
+
+    /* Kernel heap region: 8 MiB of free physical RAM directly above the
+     * kernel image. Pure symbol math (no output is emitted into the ELF);
+     * alloc_init() validates the range against the real Multiboot mmap
+     * before carving blocks out of it. */
+    . = ALIGN(16);
+    __kernel_end = .;
+    __heap_start = __kernel_end;
+    __heap_end = __heap_start + 8M;
+
     /DISCARD/ : { *(.note.*) *(.comment) }
 }

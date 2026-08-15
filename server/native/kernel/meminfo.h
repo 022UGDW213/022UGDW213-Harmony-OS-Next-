@@ -11,4 +11,8 @@ uint32_t meminfo_total_kb(void);       // mem_lower + mem_upper (KiB)
 uint32_t meminfo_available_mb(void);   // sum of available mmap entries (MiB)
 uint32_t meminfo_mmap_entries(void);   // number of mmap entries parsed
 
+// True when [base, base+len) is fully inside one *available* mmap entry.
+// Used by alloc_init() to prove the kernel heap region sits in real RAM.
+int meminfo_region_available(uint32_t base, uint32_t len);
+
 #endif // HARMONY_MEMINFO_H

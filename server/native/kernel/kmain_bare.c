@@ -8,6 +8,10 @@
 #include "idt.h"
 #include "kprintf.h"
 #include "meminfo.h"
+#include "alloc.h"
+#include "task.h"
+#include "ipc.h"
+#include "dev.h"
 #include "shell.h"
 #include <stdint.h>
 
@@ -58,7 +62,26 @@ void kmain(uint32_t magic, uint32_t addr) {
     // 6. Real memory detection from the Multiboot 1 info struct
     meminfo_init(addr);
 
-    // 7. Enable interrupts: PIT ticks now flow through the IDT
+    // 6b. REAL heap allocator: 8 MiB region above the kernel image,
+    //     validated against the mmap before a single byte is handed out.
+    alloc_init();
+
+    // 7. REAL process manager: the boot context becomes task 0 ("shell")
+    //    and two worker tasks are created with kmalloc'd kernel stacks.
+    task_init();
+
+    // 7b. The scheduler takes over IRQ0: one round-robin context switch
+    //     per PIT tick (scheduler_tick keeps the pit counters alive).
+    irq_install_handler(0, scheduler_tick);
+
+    // 8. REAL IPC: ring-buffer mailbox + producer/consumer demo task pair.
+    //    Created with interrupts still off so the ring is built atomically.
+    ipc_init();
+
+    // 8b. REAL virtual device fabric: vga, serial, keyboard, pit, console.
+    dev_init();
+
+    // 9. Enable interrupts: PIT ticks now flow through the IDT + scheduler
     __asm__ volatile ("sti");
     serial_print("[INIT] Interrupts enabled (sti)\n");
 

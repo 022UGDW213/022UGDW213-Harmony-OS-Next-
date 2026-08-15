@@ -4,9 +4,13 @@
 #include "../drivers/pit.h"
 #include "../drivers/serial.h"
 #include "../drivers/vga.h"
+#include "alloc.h"
+#include "dev.h"
+#include "ipc.h"
 #include "kprintf.h"
 #include "meminfo.h"
 #include "string.h"
+#include "task.h"
 #include <stdint.h>
 
 #define CMD_LINE_MAX 128
@@ -53,7 +57,11 @@ static void cmd_help(void) {
     kprintf("HarmonyOS Next bare-metal commands:\n");
     kprintf("  help      - this list\n");
     kprintf("  uptime    - seconds since boot (PIT tick counter)\n");
-    kprintf("  meminfo   - real detected RAM (Multiboot info)\n");
+    kprintf("  meminfo   - real detected RAM (Multiboot info) + heap stats\n");
+    kprintf("  ps        - list all task control blocks\n");
+    kprintf("  sched     - round-robin scheduler state\n");
+    kprintf("  ipc       - mailbox ring-buffer stats\n");
+    kprintf("  devices   - list the registered device table\n");
     kprintf("  echo <t>  - print the given text\n");
     kprintf("  clear     - clear the VGA screen\n");
     kprintf("  reboot    - reset via PS/2 controller (0x64 -> 0xFE)\n");
@@ -71,6 +79,12 @@ static void cmd_meminfo(void) {
             meminfo_total_kb(), meminfo_total_kb() >> 10);
     kprintf("RAM available (mmap): %u MiB across %u entries\n",
             meminfo_available_mb(), meminfo_mmap_entries());
+    // Real heap stats from the free-list allocator (kernel/alloc.c)
+    kprintf("Heap: base=%x size=%u KiB used=%u KiB free=%u KiB\n",
+            heap_base(), heap_size() >> 10,
+            heap_used_bytes() >> 10, heap_free_bytes() >> 10);
+    kprintf("Heap blocks: %u live allocations, %u free blocks\n",
+            heap_alloc_count(), heap_free_blocks());
 }
 
 static void cmd_reboot(void) {
@@ -78,6 +92,61 @@ static void cmd_reboot(void) {
     // 8042: pulse the reset line (port 0x64, command 0xFE)
     __asm__ volatile ( "outb %0, %1" : : "a"((uint8_t)0xFE), "Nd"((uint16_t)0x64) );
     while (1) { __asm__ volatile ("hlt"); }
+}
+
+static void cmd_ps(void) {
+    kprintf("PID NAME STATE ESP TICKS CREATED\n");
+    for (uint32_t i = 0; i < task_count(); i++) {
+        const tcb_t* t = task_get(i);
+        if (!t) {
+            continue;
+        }
+        const char* st = (t->state == TASK_READY)   ? "READY" :
+                         (t->state == TASK_RUNNING) ? "RUNNING" :
+                         (t->state == TASK_BLOCKED) ? "BLOCKED" : "DONE";
+        kprintf("%u %s %s %x %u %u\n",
+                t->id, t->name, st, t->esp, t->ticks, t->created_tick);
+    }
+}
+
+static void cmd_sched(void) {
+    kprintf("Scheduler: %u tasks, %u ready, current=pid %u (%s)\n",
+            task_count(), task_ready_count(),
+            task_current_id(), task_current_name());
+    kprintf("Context switches: %u | PIT ticks: %u | uptime %u s\n",
+            scheduler_switches(), (uint32_t)pit_get_ticks(),
+            pit_get_seconds());
+}
+
+static void cmd_ipc(void) {
+    kprintf("IPC mailboxes: %u\n", ipc_count());
+    for (uint32_t i = 0; i < ipc_count(); i++) {
+        const ipc_mailbox_t* mb = ipc_get(i);
+        if (!mb) {
+            continue;
+        }
+        kprintf(" %s: depth=%u/%u sent=%u recv=%u dropped=%u created=%u\n",
+                mb->name, mb->count, IPC_DEPTH,
+                mb->sent_total, mb->recv_total, mb->dropped_total,
+                mb->created_tick);
+    }
+}
+
+static void cmd_devices(void) {
+    kprintf("Registered devices: %u\n", dev_count());
+    for (uint32_t i = 0; i < dev_count(); i++) {
+        const device_t* d = dev_get(i);
+        if (!d) {
+            continue;
+        }
+        const char* type_str = (d->type == DEV_TYPE_CHAR)  ? "char" :
+                               (d->type == DEV_TYPE_TIMER) ? "timer" : "null";
+        kprintf(" %s: type=%s open=%s read=%s write=%s\n",
+                d->name, type_str,
+                d->open  ? "yes" : "-",
+                d->read  ? "yes" : "-",
+                d->write ? "yes" : "-");
+    }
 }
 
 // Tokenize: split at first space; returns pointer to rest (or NULL).
@@ -104,6 +173,14 @@ static void shell_dispatch(char* line) {
         cmd_uptime();
     } else if (strcmp(word, "meminfo") == 0) {
         cmd_meminfo();
+    } else if (strcmp(word, "ps") == 0) {
+        cmd_ps();
+    } else if (strcmp(word, "sched") == 0) {
+        cmd_sched();
+    } else if (strcmp(word, "ipc") == 0) {
+        cmd_ipc();
+    } else if (strcmp(word, "devices") == 0) {
+        cmd_devices();
     } else if (strcmp(word, "echo") == 0) {
         kprintf("%s\n", rest ? rest : "");
     } else if (strcmp(word, "clear") == 0) {

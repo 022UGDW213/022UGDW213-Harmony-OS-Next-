@@ -36,9 +36,31 @@ static uint32_t detected_total_kb = 0;
 static uint32_t detected_avail_mb = 0;
 static uint32_t detected_entries = 0;
 
+// Available mmap regions retained at init so later subsystems (heap, PMM)
+// can validate addresses against the real BIOS map.
+#define MEMINFO_MAX_AVAIL 16
+struct meminfo_avail_region {
+    uint32_t base;   // low 32 bits of base (all regions < 4 GiB here)
+    uint32_t len;    // low 32 bits of length
+};
+static struct meminfo_avail_region avail[MEMINFO_MAX_AVAIL];
+static uint32_t avail_count = 0;
+
 uint32_t meminfo_total_kb(void)     { return detected_total_kb; }
 uint32_t meminfo_available_mb(void) { return detected_avail_mb; }
 uint32_t meminfo_mmap_entries(void) { return detected_entries; }
+
+int meminfo_region_available(uint32_t base, uint32_t len) {
+    uint64_t start = base;
+    uint64_t end = (uint64_t)base + len;
+    for (uint32_t i = 0; i < avail_count; i++) {
+        if (start >= avail[i].base &&
+            end <= (uint64_t)avail[i].base + avail[i].len) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 void meminfo_init(uint32_t mb_info_addr) {
     const struct mb1_info* info = (const struct mb1_info*)mb_info_addr;
@@ -70,6 +92,14 @@ void meminfo_init(uint32_t mb_info_addr) {
 
             detected_entries++;
             if (entry->type == MULTIBOOT_MEMORY_AVAILABLE) {
+                // Keep the region for later validation (heap/alloc).
+                if (avail_count < MEMINFO_MAX_AVAIL &&
+                    entry->base_hi == 0 && entry->len_hi == 0 &&
+                    entry->len_lo >= 0x1000) {   // ignore sub-4 KiB slivers
+                    avail[avail_count].base = entry->base_lo;
+                    avail[avail_count].len  = entry->len_lo;
+                    avail_count++;
+                }
                 // len < 4 GiB in all realistic cases: print MiB from low word
                 if (entry->len_hi == 0) {
                     detected_avail_mb += (entry->len_lo >> 20);
